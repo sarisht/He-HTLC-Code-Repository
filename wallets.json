@@ -1,0 +1,12 @@
+{
+  "alice": [
+    {
+      "wif": "cNnZ1uE6Eb3o2Ziuo2GBTNZxmjJqi3aoj4CHLkfm7as8Z9ruuRcE"
+    }
+  ],
+  "bob": [
+    {
+      "wif": "cVgxEkRBtnfvd41ssd4PCsiemahAHidFrLWYoDBMNojUeME8dojZ"
+    }
+  ]
+}
