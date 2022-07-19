@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 
@@ -71,36 +72,36 @@ const (
 func main() {
 	fmt.Println("redeemScript:", BuildHeHTLCDepositRedeemScript())
 	fmt.Println("P2SH Deposit address:", BuildHeHTLCDepositP2SHAddr())
-	fmt.Println("P2SH Collateral address:", BuildHeHTLCCollateralP2SHAddr())
+	// fmt.Println("P2SH Collateral address:", BuildHeHTLCCollateralP2SHAddr())
 
-	/*
-		TEST 1: DEPOSIT SPENT by ALICE (to Alice and Bob) (Dep-A)
-		Success.
-		Testnet tx: https://blockchair.com/bitcoin/testnet/transaction/a2cfe24cd81ff5a91047cd15dccc3f7e0d7700ddf9062cf898ded1b2baf64aef
-	*/
-	fmt.Println("spend by Alice:", SpendHeHTLCDepositAlice())
+	// /*
+	// 	TEST 1: DEPOSIT SPENT by ALICE (to Alice and Bob) (Dep-A)
+	// 	Success.
+	// 	Testnet tx: https://blockchair.com/bitcoin/testnet/transaction/a2cfe24cd81ff5a91047cd15dccc3f7e0d7700ddf9062cf898ded1b2baf64aef
+	// */
+	// fmt.Println("spend by Alice:", SpendHeHTLCDepositAlice())
 
-	/*
-		TEST 2: DEPOSIT TRANSFERRED TO COLLATERAL ACCOUNT BY BOB (Dep-B)
-		Success.
-		Testnet tx: https://blockchair.com/bitcoin/testnet/transaction/062e046f6aab94f65351e55747e278c640dce28ba273c67343149ce4c5c26ca8
-	*/
-	fmt.Println("spend by Bob:", SpendHeHTLCDepositBob())
+	// /*
+	// 	TEST 2: DEPOSIT TRANSFERRED TO COLLATERAL ACCOUNT BY BOB (Dep-B)
+	// 	Success.
+	// 	Testnet tx: https://blockchair.com/bitcoin/testnet/transaction/062e046f6aab94f65351e55747e278c640dce28ba273c67343149ce4c5c26ca8
+	// */
+	// fmt.Println("spend by Bob:", SpendHeHTLCDepositBob())
 
-	/*
-		TEST 3: COLLATERAL REDEEMED BY BOB (Col-B)
-		Success.
-		Testnet tx: https://blockchair.com/bitcoin/testnet/transaction/fc52f6043c0c3b93234239c6617e7a4220e151a23a69668498b002fbfb15b607
-	*/
-	fmt.Println("collateral spend by Bob:", SpendHeHTLCCollateralBob())
+	// /*
+	// 	TEST 3: COLLATERAL REDEEMED BY BOB (Col-B)
+	// 	Success.
+	// 	Testnet tx: https://blockchair.com/bitcoin/testnet/transaction/fc52f6043c0c3b93234239c6617e7a4220e151a23a69668498b002fbfb15b607
+	// */
+	// fmt.Println("collateral spend by Bob:", SpendHeHTLCCollateralBob())
 
-	/*
-		TEST 4: COLLATERAL SPENT by MINER (Col-M)
-		Success.
-		Testnet tx: https://blockchair.com/bitcoin/testnet/transaction/7639937a8168431a6434099022cc3d2382bb875fe91cc861aba61750928f2fdf
-	*/
+	// /*
+	// 	TEST 4: COLLATERAL SPENT by MINER (Col-M)
+	// 	Success.
+	// 	Testnet tx: https://blockchair.com/bitcoin/testnet/transaction/7639937a8168431a6434099022cc3d2382bb875fe91cc861aba61750928f2fdf
+	// */
 
-	fmt.Println("miner spends: ", SpendHeHTLCCollateralMiner())
+	// fmt.Println("miner spends: ", SpendHeHTLCCollateralMiner())
 }
 
 func BuildDepositContract() []byte {
@@ -254,8 +255,26 @@ func BuildHeHTLCDepositP2SHAddr() string {
 	// calculate the hash160 of the redeem script
 	redeemHash := btcutil.Hash160(redeemScript)
 
+	witnessScript := txscript.NewScriptBuilder()
+
+	witnessScript.AddOp(txscript.OP_HASH160)
+	witnessScript.AddData(btcutil.Hash160(redeemHash))
+	witnessScript.AddOp(txscript.OP_EQUALVERIFY)
+
+	// Return serialized P2SH-P2WSH witness script
+	ws, err := witnessScript.Script()
+	h := sha256.Sum256(ws)
+
+	redeemScript2 := txscript.NewScriptBuilder()
+
+	// redeem script is simply OP_0 0x20 [witness prog]
+	redeemScript2.AddOp(txscript.OP_0)
+	redeemScript2.AddData(h[:])
+
+	rs, err := redeemScript2.Script()
+
 	// if using Bitcoin main net then pass &chaincfg.MainNetParams as second argument
-	addr, err := btcutil.NewAddressScriptHashFromHash(redeemHash, &chaincfg.TestNet3Params)
+	addr, err := btcutil.NewAddressScriptHash(rs, &chaincfg.TestNet3Params)
 	if err != nil {
 		panic(err)
 	}
