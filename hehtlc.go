@@ -7,61 +7,9 @@ import (
 	"fmt"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 )
-
-const (
-	Alice = iota
-	Bob
-)
-
-func main() {
-	params := GenTestParams()
-
-	depositScript, depositAddr := BuildDepositContract(&params)
-	fmt.Println("witness script (asm):", func() string {
-		s, _ := txscript.DisasmString(depositScript)
-		return s
-	}())
-	fmt.Println("witness script (hex):", hex.EncodeToString(depositScript))
-	fmt.Println("P2WSH Deposit address:", depositAddr)
-	// fmt.Println("P2SH Collateral address:", BuildHeHTLCCollateralP2SHAddr())
-
-	//
-	// TEST 1: DEPOSIT SPENT by ALICE (to Alice and Bob) (Dep-A)
-	// Success.
-	// Testnet tx: https://www.blockchain.com/btc-testnet/tx/6dc135484d4327ae4208043db961f25231c457d02723b94dd44d64a9368e7365
-	//
-	txvDepAlice := SpendHeHTLCDepositAlice(&params)
-	fmt.Println("spend by Alice:", txvDepAlice)
-	if txvDepAlice != params.expectedAliceTx {
-		panic("test for Alice failed")
-	}
-
-	// /*
-	// 	TEST 2: DEPOSIT TRANSFERRED TO COLLATERAL ACCOUNT BY BOB (Dep-B)
-	// 	Success.
-	// 	Testnet tx: https://blockchair.com/bitcoin/testnet/transaction/062e046f6aab94f65351e55747e278c640dce28ba273c67343149ce4c5c26ca8
-	// */
-	// fmt.Println("spend by Bob:", SpendHeHTLCDepositBob())
-
-	// /*
-	// 	TEST 3: COLLATERAL REDEEMED BY BOB (Col-B)
-	// 	Success.
-	// 	Testnet tx: https://blockchair.com/bitcoin/testnet/transaction/fc52f6043c0c3b93234239c6617e7a4220e151a23a69668498b002fbfb15b607
-	// */
-	// fmt.Println("collateral spend by Bob:", SpendHeHTLCCollateralBob())
-
-	// /*
-	// 	TEST 4: COLLATERAL SPENT by MINER (Col-M)
-	// 	Success.
-	// 	Testnet tx: https://blockchair.com/bitcoin/testnet/transaction/7639937a8168431a6434099022cc3d2382bb875fe91cc861aba61750928f2fdf
-	// */
-
-	// fmt.Println("miner spends: ", SpendHeHTLCCollateralMiner())
-}
 
 func P2WSHAddressFromWitnessScript(witnessScript []byte) btcutil.Address {
 	// BIP-141: witness program is 0 (version) || SHA256 hash of witness script
@@ -157,38 +105,11 @@ func BuildCollateralContract(params *Parameters) ([]byte, btcutil.Address) {
 		panic(err)
 	}
 
+	witnessScriptHash := sha256.Sum256(witnessScript)
+	fmt.Println("[Col] witness script", hex.EncodeToString(witnessScript[:]))
+	fmt.Println("[Col] witness script hash", hex.EncodeToString(witnessScriptHash[:]))
+
 	return witnessScript, P2WSHAddressFromWitnessScript(witnessScript)
-}
-
-func BuildBurnContract() []byte {
-
-	builder := txscript.NewScriptBuilder()
-
-	// corresponding sigscript
-	// t >= l || sigA || sigB, or
-	// preB || preA || sigA || sigB
-	builder.AddOp(txscript.OP_RETURN)
-
-	redeemScript, err := builder.Script()
-	if err != nil {
-		panic(err)
-	}
-	return redeemScript
-}
-
-func BuildHeHTLCBurnP2SHAddr() string {
-	redeemScript := BuildBurnContract()
-
-	// calculate the hash160 of the redeem script
-	redeemHash := btcutil.Hash160(redeemScript)
-
-	// if using Bitcoin main net then pass &chaincfg.MainNetParams as second argument
-	addr, err := btcutil.NewAddressScriptHashFromHash(redeemHash, &chaincfg.TestNet3Params)
-	if err != nil {
-		panic(err)
-	}
-
-	return addr.EncodeAddress()
 }
 
 func SpendHeHTLCDepositAlice(params *Parameters) string {
@@ -216,7 +137,7 @@ func SpendHeHTLCDepositAlice(params *Parameters) string {
 	tvDepAlice.AddTxOut(redeemTxOutAlice)
 	tvDepAlice.AddTxOut(redeemTxOutBob)
 
-	// sign with BIP-143 amount of UTXO
+	// BIP-143 signs the amount of UTXO too
 	amount := params.depositUTXOForAlice.amount
 	prevOutput := txscript.NewCannedPrevOutputFetcher(nil, amount)
 
@@ -255,47 +176,172 @@ func SpendHeHTLCDepositAlice(params *Parameters) string {
 	return hexSignedTx
 }
 
-func SpendHeHTLCDepositBob(params *Parameters) string {
+func SpendHeHTLCDepositBob(params *Parameters) (*wire.MsgTx, error) {
 	depositUTXO := params.GetDepositUTXOForBob()
 	txIn := wire.NewTxIn(depositUTXO, nil, nil)
 
+	depPkScript, _ := BuildDepositContract(params)
+
 	// a new tx
-	redeemTx := wire.NewMsgTx(2) // need version 2 to use OP_CSV (https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki)
-	redeemTx.AddTxIn(txIn)
+	txDepBob := wire.NewMsgTx(2) // need version 2 to use OP_CSV (https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki)
+	txDepBob.AddTxIn(txIn)
 
-	// witness script
-	witnessScript, colP2WSHAddress := BuildDepositContract(params)
-
+	// witness script for the collateral
+	_, colP2WSHAddress := BuildCollateralContract(params)
 	colPkScript, err := txscript.PayToAddrScript(colP2WSHAddress)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	redeemTxOutCol := wire.NewTxOut(
 		params.vdep+params.vcol+params.fee,
 		colPkScript)
 
-	redeemTx.AddTxOut(redeemTxOutCol)
+	txDepBob.AddTxOut(redeemTxOutCol)
 
 	// activate OP_CSV
 	// https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki
 	// https://github.com/bitcoin/bips/blob/master/bip-0068.mediawiki
-	redeemTx.TxIn[0].Sequence = uint32(params.T)
+	txDepBob.TxIn[0].Sequence = uint32(params.T)
 
 	// sign with BIP-143 amount of UTXO
 	amount := params.depositUTXOForBob.amount
 	prevOutput := txscript.NewCannedPrevOutputFetcher(nil, amount)
 
+	sigHash := txscript.NewTxSigHashes(txDepBob, prevOutput)
+
+	sigA, err := txscript.RawTxInWitnessSignature(txDepBob, sigHash, 0, amount, depPkScript, txscript.SigHashAll, params.AlicePrivateKey.PrivKey)
+	if err != nil {
+		return nil, err
+	}
+
+	sigB, err := txscript.RawTxInWitnessSignature(txDepBob, sigHash, 0, amount, depPkScript, txscript.SigHashAll, params.BobPrivateKey.PrivKey)
+	if err != nil {
+		return nil, err
+	}
+
+	//!!! everything below is NOT covered by signatures.
+	// See https://wiki.bitcoinsv.io/index.php/SIGHASH_flags
+
+	// witness stack
+	txDepBob.TxIn[0].Witness = wire.TxWitness{
+		params.preB,
+		[]byte{0x00}, // add dummy value to be consumed by first OP_HASH160
+		[]byte{},     // dummy value for MULTISIG must be empty per https://github.com/bitcoin/bips/blob/master/bip-0147.mediawiki
+		sigA,
+		sigB,
+		depPkScript,
+	}
+
+	return txDepBob, nil
+}
+
+func SpendHeHTLCCollateralBob(params *Parameters) (*wire.MsgTx, error) {
+	redeemScript, _ := BuildCollateralContract(params)
+
+	destinationAddrByteBob, err := txscript.PayToAddrScript(params.GetBobAddressOrPanic())
+	if err != nil {
+		return nil, err
+	}
+
+	// vdep + vcol to Bob
+	redeemTxOutBob := wire.NewTxOut(params.vcol+params.vdep, destinationAddrByteBob)
+
+	// txid & utxo index
+	txIn := wire.NewTxIn(params.GetCollateralUTXOForBob(), nil, nil)
+
+	// a new tx
+	redeemTx := wire.NewMsgTx(2) // need version 2 to use OP_CSV (https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki)
+	redeemTx.AddTxIn(txIn)
+	redeemTx.AddTxOut(redeemTxOutBob)
+
+	// activate OP_CSV
+	// https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki
+	// https://github.com/bitcoin/bips/blob/master/bip-0068.mediawiki
+	redeemTx.TxIn[0].Sequence = uint32(params.ell)
+
+	// signing the tx
+	amount := params.collateralUTXOForBob.amount
+	prevOutput := txscript.NewCannedPrevOutputFetcher(nil, amount)
+
 	sigHash := txscript.NewTxSigHashes(redeemTx, prevOutput)
 
-	sigA, err := txscript.RawTxInWitnessSignature(redeemTx, sigHash, 0, amount, witnessScript, txscript.SigHashAll, params.AlicePrivateKey.PrivKey)
+	sigA, err := txscript.RawTxInWitnessSignature(redeemTx, sigHash, 0, amount, redeemScript, txscript.SigHashAll, params.AlicePrivateKey.PrivKey)
+	if err != nil {
+		return nil, err
+	}
+
+	sigB, err := txscript.RawTxInWitnessSignature(redeemTx, sigHash, 0, amount, redeemScript, txscript.SigHashAll, params.BobPrivateKey.PrivKey)
+	if err != nil {
+		return nil, err
+	}
+
+	//!!! everything below is NOT covered by signatures.
+	// See https://wiki.bitcoinsv.io/index.php/SIGHASH_flags
+
+	// witness stack
+	redeemTx.TxIn[0].Witness = wire.TxWitness{
+		[]byte{0x00}, // add dummy value to be consumed by first OP_HASH160
+		[]byte{},     // dummy value for MULTISIG must be empty per https://github.com/bitcoin/bips/blob/master/bip-0147.mediawiki
+		sigA,
+		sigB,
+		redeemScript,
+	}
+
+	return redeemTx, nil
+}
+
+func SpendHeHTLCCollateralMiner(params *Parameters) (*wire.MsgTx, error) {
+	// a new tx
+	redeemTx := wire.NewMsgTx(2) // need version 2 to use OP_CSV (https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki)
+
+	// UTXO
+	txIn := wire.NewTxIn(params.GetCollateralUTXOForMiner(), nil, nil)
+	redeemTx.AddTxIn(txIn)
+
+	// create a single output with vdep provably unspendable
+	// the rest (vcol) will become part of the transaction fee
+	builder := txscript.NewScriptBuilder()
+	builder.AddOp(txscript.OP_RETURN)
+	unspendable, err := builder.Script()
+	if err != nil {
+		return nil, err
+	}
+
+	// must hide OP_RETURN in a P2SH otherwise the transaction will be considered non-standard (too small)
+
+	//calculate the hash160 of the redeem script
+	redeemHash := btcutil.Hash160(unspendable)
+
+	addr, err := btcutil.NewAddressScriptHashFromHash(redeemHash, &chaincfg.TestNet3Params)
 	if err != nil {
 		panic(err)
 	}
 
-	sigB, err := txscript.RawTxInWitnessSignature(redeemTx, sigHash, 0, amount, witnessScript, txscript.SigHashAll, params.BobPrivateKey.PrivKey)
+	pkScript, err := txscript.PayToAddrScript(addr)
 	if err != nil {
-		panic(err)
+		return nil, err
+	}
+
+	redeemTxOutBurn := wire.NewTxOut(params.vdep, pkScript)
+
+	redeemTx.AddTxOut(redeemTxOutBurn)
+
+	// sign the tx
+	amount := params.collateralUTXOForMiner.amount
+	prevOutput := txscript.NewCannedPrevOutputFetcher(nil, amount)
+
+	sigHash := txscript.NewTxSigHashes(redeemTx, prevOutput)
+
+	colWitnessScript, _ := BuildCollateralContract(params)
+	siga, err := txscript.RawTxInWitnessSignature(redeemTx, sigHash, 0, amount, colWitnessScript, txscript.SigHashAll, params.AlicePrivateKey.PrivKey)
+	if err != nil {
+		return nil, err
+	}
+
+	sigb, err := txscript.RawTxInWitnessSignature(redeemTx, sigHash, 0, amount, colWitnessScript, txscript.SigHashAll, params.BobPrivateKey.PrivKey)
+	if err != nil {
+		return nil, err
 	}
 
 	//!!! everything below is NOT covered by signatures.
@@ -304,187 +350,12 @@ func SpendHeHTLCDepositBob(params *Parameters) string {
 	// witness stack
 	redeemTx.TxIn[0].Witness = wire.TxWitness{
 		params.preB,
-		[]byte{0x00}, // add dummy value to be consumed by first OP_HASH160
-		[]byte{},     // dummy value for MULTISIG must be empty per https://github.com/bitcoin/bips/blob/master/bip-0147.mediawiki
-		sigA,
-		sigB,
-		witnessScript,
+		params.preA,
+		[]byte{}, // dummy value for MULTISIG must be empty per https://github.com/bitcoin/bips/blob/master/bip-0147.mediawiki
+		siga,
+		sigb,
+		colWitnessScript,
 	}
 
-	//signature := txscript.NewScriptBuilder()
-	//signature.AddData(params.preB)
-	//signature.AddOp(txscript.OP_0) // add dummy value to be consumed by first OP_HASH160
-	//signature.AddOp(txscript.OP_0) // deal with the off-by-one error in CHECKMULTISIG https://learnmeabitcoin.com/technical/p2ms
-	//signature.AddData(sigA)
-	//signature.AddData(sigB)
-	//signature.AddData(witnessScript)
-
-	//signatureScript, err := signature.Script()
-	//if err != nil {
-	//	panic(err)
-	//}
-	//
-	//redeemTx.TxIn[0].SignatureScript = signatureScript
-
-	var signedTx bytes.Buffer
-	err = redeemTx.Serialize(&signedTx)
-	if err != nil {
-		panic(err)
-	}
-
-	hexSignedTx := hex.EncodeToString(signedTx.Bytes())
-
-	return hexSignedTx
-}
-
-func SpendHeHTLCCollateralBob() string {
-
-	params := GenTestParams()
-
-	redeemScript, _ := BuildCollateralContract(&params)
-
-	decodedAddrBob, err := btcutil.DecodeAddress(params.Bob2Bech32Address, &chaincfg.TestNet3Params)
-	if err != nil {
-		panic(err)
-	}
-	destinationAddrByteBob, err := txscript.PayToAddrScript(decodedAddrBob)
-	if err != nil {
-		panic(err)
-	}
-	redeemTxOutBob := wire.NewTxOut(int64(params.vcol)+int64(params.vdep), destinationAddrByteBob)
-
-	// txid & utxo index
-	utxoHash, err := chainhash.NewHashFromStr(params.collateralUTXOForBob.txid)
-	if err != nil {
-		panic(err)
-	}
-	outPoint := wire.NewOutPoint(utxoHash, params.collateralUTXOForBob.utxo)
-	txIn := wire.NewTxIn(outPoint, nil, nil)
-
-	// a new tx
-	redeemTx := wire.NewMsgTx(2) // need version 2 to use OP_CSV (https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki)
-	redeemTx.AddTxIn(txIn)
-	redeemTx.AddTxOut(redeemTxOutBob)
-
-	// signing the tx
-	fmt.Println("preA: ", hex.EncodeToString(params.preA))
-	fmt.Println("preB: ", hex.EncodeToString(params.preB))
-
-	// activate OP_CSV
-	// https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki
-	// https://github.com/bitcoin/bips/blob/master/bip-0068.mediawiki
-	redeemTx.TxIn[0].Sequence = uint32(params.ell)
-
-	siga, err := txscript.RawTxInSignature(redeemTx, 0, redeemScript, txscript.SigHashAll, params.AlicePrivateKey.PrivKey)
-	if err != nil {
-		panic(err)
-	}
-
-	sigb, err := txscript.RawTxInSignature(redeemTx, 0, redeemScript, txscript.SigHashAll, params.BobPrivateKey.PrivKey)
-	if err != nil {
-		panic(err)
-	}
-
-	//!!! everything below is NOT covered by signatures.
-	// See https://wiki.bitcoinsv.io/index.php/SIGHASH_flags
-
-	signature := txscript.NewScriptBuilder()
-
-	signature.AddOp(txscript.OP_0) // // add dummy value to be consumed by first OP_HASH160
-
-	signature.AddOp(txscript.OP_0) // deal with the off-by-one error in CHECKMULTISIG https://learnmeabitcoin.com/technical/p2ms
-	signature.AddData(siga)
-	signature.AddData(sigb)
-	signature.AddData(redeemScript)
-
-	signatureScript, err := signature.Script()
-	if err != nil {
-		panic(err)
-	}
-
-	redeemTx.TxIn[0].SignatureScript = signatureScript
-
-	var signedTx bytes.Buffer
-	redeemTx.Serialize(&signedTx)
-
-	hexSignedTx := hex.EncodeToString(signedTx.Bytes())
-
-	return hexSignedTx
-}
-
-func SpendHeHTLCCollateralMiner() string {
-
-	params := GenTestParams()
-
-	redeemScript, _ := BuildCollateralContract(&params)
-
-	burnAddr := BuildHeHTLCBurnP2SHAddr()
-
-	decodedAddrBurn, err := btcutil.DecodeAddress(string(burnAddr), &chaincfg.TestNet3Params)
-	if err != nil {
-		panic(err)
-	}
-	destinationAddrByteBurn, err := txscript.PayToAddrScript(decodedAddrBurn)
-	if err != nil {
-		panic(err)
-	}
-	redeemTxOutBurn := wire.NewTxOut(int64(params.vdep), destinationAddrByteBurn)
-
-	// txid & utxo index
-	utxoHash, err := chainhash.NewHashFromStr(params.collateralUTXOForMiner.txid)
-	if err != nil {
-		panic(err)
-	}
-	outPoint := wire.NewOutPoint(utxoHash, params.collateralUTXOForMiner.utxo)
-	txIn := wire.NewTxIn(outPoint, nil, nil)
-
-	// a new tx
-	redeemTx := wire.NewMsgTx(2) // need version 2 to use OP_CSV (https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki)
-	redeemTx.AddTxIn(txIn)
-	redeemTx.AddTxOut(redeemTxOutBurn)
-
-	// signing the tx
-	fmt.Println("preA: ", hex.EncodeToString(params.preA))
-	fmt.Println("preB: ", hex.EncodeToString(params.preB))
-
-	// activate OP_CSV
-	// https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki
-	// https://github.com/bitcoin/bips/blob/master/bip-0068.mediawiki
-
-	siga, err := txscript.RawTxInSignature(redeemTx, 0, redeemScript, txscript.SigHashAll, params.AlicePrivateKey.PrivKey)
-	if err != nil {
-		panic(err)
-	}
-
-	sigb, err := txscript.RawTxInSignature(redeemTx, 0, redeemScript, txscript.SigHashAll, params.BobPrivateKey.PrivKey)
-	if err != nil {
-		panic(err)
-	}
-
-	//!!! everything below is NOT covered by signatures.
-	// See https://wiki.bitcoinsv.io/index.php/SIGHASH_flags
-
-	signature := txscript.NewScriptBuilder()
-
-	signature.AddData(params.preB)
-	signature.AddData(params.preA)
-
-	signature.AddOp(txscript.OP_0) // deal with the off-by-one error in CHECKMULTISIG https://learnmeabitcoin.com/technical/p2ms
-	signature.AddData(siga)
-	signature.AddData(sigb)
-	signature.AddData(redeemScript)
-
-	signatureScript, err := signature.Script()
-	if err != nil {
-		panic(err)
-	}
-
-	redeemTx.TxIn[0].SignatureScript = signatureScript
-
-	var signedTx bytes.Buffer
-	redeemTx.Serialize(&signedTx)
-
-	hexSignedTx := hex.EncodeToString(signedTx.Bytes())
-
-	return hexSignedTx
+	return redeemTx, nil
 }
