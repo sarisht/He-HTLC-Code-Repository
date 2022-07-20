@@ -23,7 +23,7 @@ func TestSpendHeHTLCDepositAlice(t *testing.T) {
 	//
 	// TEST 1: DEPOSIT SPENT by ALICE (to Alice and Bob) (Dep-A)
 	// Success.
-	// Testnet tx: https://www.blockchain.com/btc-testnet/tx/6dc135484d4327ae4208043db961f25231c457d02723b94dd44d64a9368e7365
+	// Testnet tx: https://www.blockchain.com/btc-testnet/tx/5dbb7c677b3177700a541ecc23604bbfdb5ddd5a463e924428ae096646214180
 	//
 	t.Run("test tx_vdep_alice", func(t *testing.T) {
 		txvDepAlice := SpendHeHTLCDepositAlice(&params)
